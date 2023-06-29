@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -165,29 +164,59 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	r := Raft{
+		id:               c.ID,
+		Prs:              make(map[uint64]*Progress),
+		votes:            make(map[uint64]bool),
+		heartbeatTimeout: c.HeartbeatTick,
+		electionTimeout:  c.ElectionTick,
+		msgs:             make([]pb.Message, 0),
+		State:            StateFollower,
+	}
+	return &r
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
+
 	return false
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+
 }
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	switch r.State {
+	case StateLeader:
+		r.leaderTick()
+	case StateCandidate:
+		r.candidateTick()
+	case StateFollower:
+		r.followerTick()
+	}
+}
+func (r *Raft) leaderTick() {
+	r.heartbeatElapsed++
+
+}
+func (r *Raft) candidateTick() {
+
+}
+func (r *Raft) followerTick() {
+
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -209,6 +238,7 @@ func (r *Raft) Step(m pb.Message) error {
 	case StateFollower:
 	case StateCandidate:
 	case StateLeader:
+
 	}
 	return nil
 }
