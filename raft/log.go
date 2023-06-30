@@ -50,7 +50,7 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
-	FirstIndex uint64
+	dummyIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -65,7 +65,7 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic(err)
 	}
-	entries, err := storage.Entries(firstIndex, lastIndex)
+	entries, err := storage.Entries(firstIndex, lastIndex+1)
 	if err != nil {
 		panic(err)
 	}
@@ -80,7 +80,7 @@ func newLog(storage Storage) *RaftLog {
 		applied:    firstIndex - 1,
 		stabled:    lastIndex,
 		entries:    entries,
-		FirstIndex: firstIndex,
+		dummyIndex: firstIndex,
 	}
 	return raftLog
 }
@@ -109,20 +109,29 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	if l.entries == nil || len(l.entries) == 0 {
-		return nil
+	if l.committed > l.applied {
+		return l.entries[l.applied-l.dummyIndex+1 : l.committed-l.dummyIndex+1]
 	}
-	return l.entries[l.applied-l.FirstIndex+1 : l.committed-l.FirstIndex+1]
+	return make([]pb.Entry, 0)
+
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return l.FirstIndex + uint64(len(l.entries)) - 1
+	return l.dummyIndex + uint64(len(l.entries)) - 1
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	if i >= l.dummyIndex {
+		return l.entries[i-l.dummyIndex].Term, nil
+	}
+	//check if i is in the installing snapshot
+	if !IsEmptySnap(l.pendingSnapshot) && i == l.pendingSnapshot.Metadata.Index {
+		return l.pendingSnapshot.Metadata.Term, nil
+	}
+	//else i is in the snapshot
+	return l.storage.Term(i)
 }
