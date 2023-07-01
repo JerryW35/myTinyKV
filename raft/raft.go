@@ -214,6 +214,13 @@ func (r *Raft) sendAppend(to uint64) bool {
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	msg := pb.Message{
+		From:    r.id,
+		To:      to,
+		MsgType: pb.MessageType_MsgHeartbeat,
+		Term:    r.Term,
+	}
+	r.msgs = append(r.msgs, msg)
 
 }
 
@@ -232,11 +239,14 @@ func (r *Raft) tick() {
 func (r *Raft) leaderTick() {
 	r.heartbeatElapsed++
 	if r.heartbeatElapsed >= r.heartbeatTimeout {
-		r.Step(pb.Message{
+		err := r.Step(pb.Message{
 			From:    r.id,
 			To:      r.id,
 			MsgType: pb.MessageType_MsgBeat,
 		})
+		if err != nil {
+			return
+		}
 	}
 
 }
@@ -244,11 +254,14 @@ func (r *Raft) candidateTick() {
 	r.electionElapsed++
 	if r.electionElapsed >= r.electionTimeout {
 		r.electionElapsed = 0
-		r.Step(pb.Message{
+		err := r.Step(pb.Message{
 			From:    r.id,
 			To:      r.id,
 			MsgType: pb.MessageType_MsgHup,
 		})
+		if err != nil {
+			return
+		}
 	}
 
 }
@@ -256,25 +269,26 @@ func (r *Raft) followerTick() {
 	r.electionElapsed++
 	if r.electionElapsed >= r.electionTimeout {
 		r.electionElapsed = 0
-		r.Step(pb.Message{
+		err := r.Step(pb.Message{
 			From:    r.id,
 			To:      r.id,
 			MsgType: pb.MessageType_MsgHup,
 		})
+		if err != nil {
+			return
+		}
 	}
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
-	if r.Term < term {
-		r.Vote = None
-	}
+	r.Vote = None
 	r.Lead = lead
 	r.Term = term
 	r.State = StateFollower
 	r.electionElapsed = 0
-	//r.resetTimeout()
+	r.resetTimeout()
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -283,7 +297,7 @@ func (r *Raft) becomeCandidate() {
 	r.Term++
 	r.State = StateCandidate
 
-	r.votes = map[uint64]bool{}
+	r.votes = make(map[uint64]bool)
 	r.Vote = r.id
 	r.votes[r.id] = true
 
@@ -361,7 +375,7 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgRequestVote:
 			r.handleVoteRequest(m)
 		case pb.MessageType_MsgHeartbeatResponse:
-			r.handleVoteResponse(m)
+			r.handleHeartBeatResponse(m)
 		}
 	}
 	return nil
@@ -394,12 +408,102 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
 }
 func (r *Raft) handleStartElection(m pb.Message) {
+	r.becomeCandidate()
+	if len(r.Prs) == 1 {
+		r.becomeLeader()
+		return
+	}
+	// send requestVote
+	for id := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		lastTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
+		r.msgs = append(r.msgs, pb.Message{
+			From:    r.id,
+			To:      id,
+			Term:    r.Term,
+			MsgType: pb.MessageType_MsgRequestVote,
+			Index:   r.RaftLog.LastIndex(),
+			LogTerm: lastTerm,
+		})
+	}
 }
 func (r *Raft) handleVoteRequest(m pb.Message) {
+	res := pb.Message{
+		From:    r.id,
+		To:      m.From,
+		MsgType: pb.MessageType_MsgRequestVoteResponse,
+		Term:    r.Term,
+	}
+	// if not follower, then check the term
+	if r.State != StateFollower {
+		if r.Term < m.Term {
+			r.becomeFollower(m.Term, None)
+		} else {
+			res.Reject = true
+		}
+	}
 
+	if r.State == StateFollower {
+		if r.Term < m.Term {
+			r.becomeFollower(m.Term, None)
+		}
+		lastIndex := r.RaftLog.LastIndex()
+		lastTerm, _ := r.RaftLog.Term(lastIndex)
+
+		// if candidate has greater term, reject
+		// if had been voted, reject
+		// if candidate's lastLogTerm < r.Term, reject
+		// if candidate's lastLogTerm = r.Term but
+		// candidate's lastLogIndex < r.lastLogIndex, reject
+		if m.Term < r.Term || (r.Vote != None && r.Vote != m.From) ||
+			lastTerm > m.LogTerm ||
+			(lastTerm == m.LogTerm && lastIndex > m.Index) {
+			res.Reject = true
+		} else {
+			r.Vote = m.From
+		}
+	}
+
+	r.msgs = append(r.msgs, res)
 }
 func (r *Raft) handleVoteResponse(m pb.Message) {
+	// count votes
+	r.votes[m.From] = !m.Reject
+	count := 0
+	for _, vote := range r.votes {
+		if vote {
+			count++
+		}
+	}
 
+	if !m.Reject {
+		//win the election
+		if count >= len(r.Prs)/2+1 {
+			r.becomeLeader()
+		}
+	} else {
+		// check term
+		if m.Term > r.Term {
+			r.becomeFollower(m.Term, None)
+		}
+		// lose the election
+		if len(r.votes)-count >= len(r.Prs)/2+1 {
+			r.becomeFollower(r.Term, None)
+		}
+	}
+
+}
+func (r *Raft) handleHeartBeatResponse(m pb.Message) {
+	//check the term
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+	} else {
+		if r.Prs[m.From].Match < r.RaftLog.LastIndex() {
+			r.sendAppend(m.From)
+		}
+	}
 }
 
 // for leader
