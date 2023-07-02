@@ -135,3 +135,17 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	//else i is in the snapshot
 	return l.storage.Term(i)
 }
+
+func (l *RaftLog) getTerm(i uint64) uint64 {
+	// Your Code Here (2A).
+	if i >= l.dummyIndex {
+		return l.entries[i-l.dummyIndex].Term
+	}
+	//check if i is in the installing snapshot
+	if !IsEmptySnap(l.pendingSnapshot) && i == l.pendingSnapshot.Metadata.Index {
+		return l.pendingSnapshot.Metadata.Term, nil
+	}
+	//else i is in the snapshot
+	term, _ := l.storage.Term(i)
+	return term
+}

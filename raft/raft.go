@@ -207,7 +207,6 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-
 	return false
 }
 
@@ -384,6 +383,51 @@ func (r *Raft) Step(m pb.Message) error {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	res := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    r.id,
+		To:      m.From,
+		Term:    r.Term,
+	}
+	if m.Term < r.Term {
+		res.Reject = true
+		r.msgs = append(r.msgs, res)
+		return
+	}
+	preLogIndex := m.Index
+	preLogTerm := m.LogTerm
+	if r.State != StateFollower {
+		r.becomeFollower(m.Term, m.From)
+	}
+	// follower is out of date
+	//Reply false if log doesn’t contain an entry at prevLogIndex
+	//whose term matches prevLogTerm
+	//If an existing entry conflicts with a new one (same index
+	//but different terms), delete the existing entry and all that
+	//follow it
+	if preLogTerm > r.RaftLog.LastIndex() ||
+		r.RaftLog.getTerm(preLogIndex) != preLogIndex {
+		// get current conflict index
+		res.Index = r.RaftLog.LastIndex()
+		// if follower has some dirty logs, then find the last log that is not conflict with leader
+		if r.RaftLog.LastIndex() >= preLogIndex {
+			conflictTerm := r.RaftLog.getTerm(preLogIndex)
+			for _, entry := range r.RaftLog.entries {
+				if entry.Term == conflictTerm {
+					res.Index = entry.Index - 1
+					break
+				}
+			}
+		}
+	} else {
+		// prevLogIndex no conflict
+		if len(m.Entries) > 0 {
+			index, newLogIndex := m.Index+1, m.Index+1
+			for ; index < r.RaftLog.LastIndex() && index <= m.Entries[len(m.Entries)-1].Index; index++ {
+
+			}
+		}
+	}
 
 }
 
