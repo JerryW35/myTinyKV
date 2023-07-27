@@ -143,7 +143,7 @@ func (l *RaftLog) getTerm(i uint64) uint64 {
 	}
 	//check if i is in the installing snapshot
 	if !IsEmptySnap(l.pendingSnapshot) && i == l.pendingSnapshot.Metadata.Index {
-		return l.pendingSnapshot.Metadata.Term, nil
+		return l.pendingSnapshot.Metadata.Term
 	}
 	//else i is in the snapshot
 	term, _ := l.storage.Term(i)
