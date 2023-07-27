@@ -103,7 +103,10 @@ func (l *RaftLog) allEntries() []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries[l.stabled+1:]
+	if l.LastIndex()-l.stabled == 0 {
+		return make([]pb.Entry, 0)
+	}
+	return l.getEntries(l.stabled+1, 0)
 }
 
 // nextEnts returns all the committed but not applied entries

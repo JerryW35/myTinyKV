@@ -270,11 +270,10 @@ func (r *Raft) leaderTick() {
 			return
 		}
 	}
-
 }
 func (r *Raft) candidateTick() {
 	r.electionElapsed++
-	if r.electionElapsed >= r.electionTimeout {
+	if r.electionElapsed >= r.randomElectionTimeout {
 		r.electionElapsed = 0
 		err := r.Step(pb.Message{
 			From:    r.id,
@@ -289,7 +288,7 @@ func (r *Raft) candidateTick() {
 }
 func (r *Raft) followerTick() {
 	r.electionElapsed++
-	if r.electionElapsed >= r.electionTimeout {
+	if r.electionElapsed >= r.randomElectionTimeout {
 		r.electionElapsed = 0
 		err := r.Step(pb.Message{
 			From:    r.id,
@@ -331,8 +330,6 @@ func (r *Raft) becomeCandidate() {
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
-	// Your Code Here (2A).
-	// NOTE: Leader should propose a noop entry on its term
 	r.Lead = r.id
 	r.State = StateLeader
 
@@ -348,7 +345,7 @@ func (r *Raft) becomeLeader() {
 	}
 	err := r.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
-		Entries: []*pb.Entry{},
+		Entries: []*pb.Entry{{}},
 	})
 	if err != nil {
 		return
@@ -367,43 +364,43 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgAppend:
 			r.handleAppendEntries(m) //
 		case pb.MessageType_MsgRequestVote:
-			r.handleVoteRequest(m)
+			r.handleVoteRequest(m) //
 		case pb.MessageType_MsgHeartbeat:
-			r.handleHeartbeat(m)
+			r.handleHeartbeat(m) //
 		case pb.MessageType_MsgTimeoutNow:
-			r.handleTimeoutNowRequest(m)
+			r.handleTimeoutNowRequest(m) //
 
 		}
 	case StateCandidate:
 		switch m.MsgType {
 		case pb.MessageType_MsgHup:
-			r.handleStartElection(m)
+			r.handleStartElection(m) //
 		case pb.MessageType_MsgAppend:
-			r.handleAppendEntries(m)
+			r.handleAppendEntries(m) //
 		case pb.MessageType_MsgRequestVote:
-			r.handleVoteRequest(m)
+			r.handleVoteRequest(m) //
 		case pb.MessageType_MsgRequestVoteResponse:
-			r.handleVoteResponse(m)
+			r.handleVoteResponse(m) //
 		case pb.MessageType_MsgHeartbeat:
-			r.handleHeartbeat(m)
+			r.handleHeartbeat(m) //
 		case pb.MessageType_MsgTimeoutNow:
-			r.handleTimeoutNowRequest(m)
+			r.handleTimeoutNowRequest(m) //
 		}
 
 	case StateLeader:
 		switch m.MsgType {
 		case pb.MessageType_MsgBeat:
-			r.boardcastHeartBeat(m)
+			r.boardcastHeartBeat(m) //
 		case pb.MessageType_MsgPropose:
-			r.proposeMsg(m)
+			r.proposeMsg(m) //
 		case pb.MessageType_MsgAppend:
-			r.handleAppendEntries(m)
+			r.handleAppendEntries(m) //
 		case pb.MessageType_MsgAppendResponse:
-			r.handleAppendResponse(m)
+			r.handleAppendResponse(m) //
 		case pb.MessageType_MsgRequestVote:
-			r.handleVoteRequest(m)
+			r.handleVoteRequest(m) //
 		case pb.MessageType_MsgHeartbeatResponse:
-			r.handleHeartBeatResponse(m)
+			r.handleHeartBeatResponse(m) //
 		}
 	}
 	return nil
@@ -411,6 +408,7 @@ func (r *Raft) Step(m pb.Message) error {
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
+	//
 	// Your Code Here (2A).
 	res := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
@@ -418,8 +416,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		To:      m.From,
 		Term:    r.Term,
 	}
+	res.Reject = true
 	if m.Term < r.Term {
-		res.Reject = true
 		r.msgs = append(r.msgs, res)
 		return
 	}
@@ -590,8 +588,7 @@ func (r *Raft) handleVoteResponse(m pb.Message) {
 
 }
 func (r *Raft) handleHeartBeatResponse(m pb.Message) {
-	//check the term
-	if m.Term > r.Term {
+	if m.Reject {
 		r.becomeFollower(m.Term, None)
 	} else {
 		if r.Prs[m.From].Match < r.RaftLog.LastIndex() {
@@ -612,12 +609,8 @@ func (r *Raft) boardcastHeartBeat(m pb.Message) {
 }
 func (r *Raft) proposeMsg(m pb.Message) {
 	//firstly append the entry to leader's entries
-	lastIndex := r.RaftLog.LastIndex()
-	for i := range m.Entries {
-		m.Entries[i].Index = lastIndex + uint64(i) + 1
-		m.Entries[i].Term = r.Term
-		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
-	}
+	r.appendEntry(m.Entries)
+
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 	if len(r.Prs) == 1 {
@@ -742,4 +735,19 @@ func (l *RaftLog) appendNewEntry(ents []*pb.Entry) uint64 {
 		l.entries = append(l.entries, *ents[i])
 	}
 	return l.LastIndex()
+}
+func (l *RaftLog) isUpToDate(index, term uint64) bool {
+	return term > l.LastTerm() || (term == l.LastTerm() && index >= l.LastIndex())
+}
+func (r *Raft) appendEntry(entries []*pb.Entry) {
+	lastIndex := r.RaftLog.LastIndex() // leader 最后一条日志的索引
+	for i := range entries {
+		// 设置新日志的索引和任期
+		entries[i].Index = lastIndex + uint64(i) + 1
+		entries[i].Term = r.Term
+		if entries[i].EntryType == pb.EntryType_EntryConfChange {
+			r.PendingConfIndex = entries[i].Index
+		}
+	}
+	r.RaftLog.appendNewEntry(entries)
 }
