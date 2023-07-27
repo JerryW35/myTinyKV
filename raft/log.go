@@ -50,7 +50,7 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
-	dummyIndex uint64
+	dummyIndex uint64 //Index of the log corresponding to entries[0].
 }
 
 // newLog returns log using the given storage. It recovers the log

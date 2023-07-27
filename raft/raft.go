@@ -16,8 +16,10 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	"math/rand"
+	rand2 "math/rand"
+	"sort"
 	"time"
 )
 
@@ -207,7 +209,28 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	prevLogIndex := r.Prs[to].Next - 1
+	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
+	if err != nil {
+		return false
+	}
+	appendMsg := pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		LogTerm: prevLogTerm,
+		Index:   prevLogIndex,
+		Entries: make([]*pb.Entry, 0),
+		Commit:  r.RaftLog.committed,
+	}
+	// the entire expected to append or cover to the follower
+	nextEntries := r.RaftLog.getEntries(prevLogIndex+1, 0)
+	for i := range nextEntries {
+		appendMsg.Entries = append(appendMsg.Entries, &nextEntries[i])
+	}
+	r.msgs = append(r.msgs, appendMsg)
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -281,8 +304,10 @@ func (r *Raft) followerTick() {
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
-	// Your Code Here (2A).
-	r.Vote = None
+	// Your Code Here (2A)
+	if term > r.Term {
+		r.Vote = None
+	}
 	r.Lead = lead
 	r.Term = term
 	r.State = StateFollower
@@ -296,11 +321,10 @@ func (r *Raft) becomeCandidate() {
 	r.Term++
 	r.State = StateCandidate
 
-	r.votes = make(map[uint64]bool)
 	r.Vote = r.id
 	r.votes[r.id] = true
 
-	r.Lead = None
+	//r.Lead = None
 	r.electionElapsed = 0
 	r.resetTimeout()
 }
@@ -339,13 +363,16 @@ func (r *Raft) Step(m pb.Message) error {
 	case StateFollower:
 		switch m.MsgType {
 		case pb.MessageType_MsgHup:
-			r.handleStartElection(m)
+			r.handleStartElection(m) //
 		case pb.MessageType_MsgAppend:
-			r.handleAppendEntries(m)
+			r.handleAppendEntries(m) //
 		case pb.MessageType_MsgRequestVote:
 			r.handleVoteRequest(m)
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
+		case pb.MessageType_MsgTimeoutNow:
+			r.handleTimeoutNowRequest(m)
+
 		}
 	case StateCandidate:
 		switch m.MsgType {
@@ -359,6 +386,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleVoteResponse(m)
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
+		case pb.MessageType_MsgTimeoutNow:
+			r.handleTimeoutNowRequest(m)
 		}
 
 	case StateLeader:
@@ -396,9 +425,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 	preLogIndex := m.Index
 	preLogTerm := m.LogTerm
-	if r.State != StateFollower {
-		r.becomeFollower(m.Term, m.From)
-	}
+	r.becomeFollower(m.Term, m.From)
 	//follower is out of date
 	//Reply false if log doesn't contain an entry at prevLogIndex
 	//whose term matches prevLogTerm
@@ -434,6 +461,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				if term != m.Entries[index-newLogIndex].Term {
 					break
 				}
+			}
+			if index-newLogIndex != uint64(len(m.Entries)) {
+				r.RaftLog.truncate(index)
+				r.RaftLog.appendNewEntry(m.Entries[index-newLogIndex:])
+				r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
 			}
 		}
 		//update the commitIndex
@@ -478,16 +510,18 @@ func (r *Raft) handleStartElection(m pb.Message) {
 		if id == r.id {
 			continue
 		}
-		lastTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
+
 		r.msgs = append(r.msgs, pb.Message{
 			From:    r.id,
 			To:      id,
 			Term:    r.Term,
 			MsgType: pb.MessageType_MsgRequestVote,
 			Index:   r.RaftLog.LastIndex(),
-			LogTerm: lastTerm,
+			LogTerm: r.RaftLog.LastTerm(),
 		})
 	}
+	r.votes = make(map[uint64]bool)
+	r.votes[r.id] = true
 }
 func (r *Raft) handleVoteRequest(m pb.Message) {
 	res := pb.Message{
@@ -578,9 +612,46 @@ func (r *Raft) boardcastHeartBeat(m pb.Message) {
 }
 func (r *Raft) proposeMsg(m pb.Message) {
 	//firstly append the entry to leader's entries
-
+	lastIndex := r.RaftLog.LastIndex()
+	for i := range m.Entries {
+		m.Entries[i].Index = lastIndex + uint64(i) + 1
+		m.Entries[i].Term = r.Term
+		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
+	}
+	r.Prs[r.id].Match = r.RaftLog.LastIndex()
+	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
+	if len(r.Prs) == 1 {
+		r.RaftLog.committed = r.RaftLog.LastIndex()
+	} else {
+		r.broadcastAppendEntry()
+	}
 }
+func (r *Raft) broadcastAppendEntry() {
+	for id := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		r.sendAppend(id)
+	}
+}
+
 func (r *Raft) handleAppendResponse(m pb.Message) {
+	//for leader
+	if m.Reject {
+		if m.Term > r.Term {
+			r.becomeFollower(m.Term, None)
+		} else {
+			// has conflict
+			r.Prs[m.From].Next = m.Index + 1
+			r.sendAppend(m.From)
+		}
+		return
+	}
+	if r.Prs[m.From].checkUpdate(m.Index) {
+		if r.checkCommit() {
+			r.broadcastAppendEntry()
+		}
+	}
 
 }
 
@@ -595,6 +666,80 @@ func (r *Raft) removeNode(id uint64) {
 }
 
 func (r *Raft) resetTimeout() {
-	random := rand.New(rand.NewSource(time.Now().UnixNano()))
-	r.randomElectionTimeout = r.electionTimeout + random.Intn(r.electionTimeout)
+	rand2.Seed(time.Now().UnixNano())
+	//[0,n)+electionTimeout
+	//[electionTimeout,electionTimeout*2)
+	r.randomElectionTimeout = r.electionTimeout + rand2.Intn(r.electionTimeout)
+}
+
+// Returns all logs between [start, end), end = 0 means return all logs from start.
+func (l *RaftLog) getEntries(start uint64, end uint64) []pb.Entry {
+	if end == 0 {
+		end = l.LastIndex() + 1
+	}
+	start, end = start-l.dummyIndex, end-l.dummyIndex
+	return l.entries[start:end]
+}
+func (pr *Progress) checkUpdate(n uint64) bool {
+	var updated bool
+	if pr.Match < n {
+		pr.Match = n
+		pr.Next = pr.Match + 1
+		updated = true
+	}
+	return updated
+}
+
+// checkCommit check if there are new logs to commit
+func (r *Raft) checkCommit() bool {
+	matchArray := make(uint64Slice, 0)
+	for _, progress := range r.Prs {
+		matchArray = append(matchArray, progress.Match)
+	}
+	// Get the median of all node matches, which is the log index that is replicated by most nodes
+	sort.Sort(sort.Reverse(matchArray))
+	majority := len(r.Prs)/2 + 1
+	toCommitIndex := matchArray[majority-1]
+	// Check if we can commit toCommitIndex
+	return r.RaftLog.maybeCommit(toCommitIndex, r.Term)
+}
+
+// maybeCommit Check if a log that is replicated by a majority of nodes needs to be committed
+func (l *RaftLog) maybeCommit(toCommit, term uint64) bool {
+	commitTerm, _ := l.Term(toCommit)
+	if toCommit > l.committed && commitTerm == term {
+		// 只有当该日志被大多数节点复制（函数调用保证），并且日志索引大于当前的commitIndex（Condition 1）
+		// 并且该日志是当前任期内创建的日志（Condition 2），才可以提交这条日志
+		// 【注】为了一致性，Raft 永远不会通过计算副本的方式提交之前任期的日志，只能通过提交当前任期的日志一并提交之前所有的日志
+		l.committed = toCommit
+		return true
+	}
+	return false
+}
+func (r *Raft) handleTimeoutNowRequest(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
+	//start election
+	if err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHup}); err != nil {
+		log.Panic(err)
+	}
+}
+func (l *RaftLog) LastTerm() uint64 {
+	if len(l.entries) == 0 {
+		return 0
+	}
+	lastIndex := l.LastIndex() - l.dummyIndex
+	return l.entries[lastIndex].Term
+}
+func (l *RaftLog) truncate(startIndex uint64) {
+	if len(l.entries) > 0 {
+		l.entries = l.entries[:startIndex-l.dummyIndex]
+	}
+}
+func (l *RaftLog) appendNewEntry(ents []*pb.Entry) uint64 {
+	for i := range ents {
+		l.entries = append(l.entries, *ents[i])
+	}
+	return l.LastIndex()
 }
