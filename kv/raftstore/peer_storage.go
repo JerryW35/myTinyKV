@@ -331,6 +331,18 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+	raftWB := &engine_util.WriteBatch{}
+	var res *ApplySnapResult
+	var err error
+	if raft.IsEmptySnap(&ready.Snapshot) {
+		kvWb := &engine_util.WriteBatch{}
+		res, err := ps.ApplySnapshot(&ready.Snapshot, kvWb, raftWB)
+		if err != nil {
+			log.Panic(err)
+		}
+		kvWb.MustWriteToDB(ps.Engines.Kv)
+	}
+
 	return nil, nil
 }
 
