@@ -184,7 +184,7 @@ func newRaft(c *Config) *Raft {
 		Prs:     make(map[uint64]*Progress),
 		State:   StateFollower,
 		votes:   make(map[uint64]bool),
-		msgs:    []pb.Message{},
+		msgs:    nil,
 		Lead:    0,
 
 		heartbeatTimeout: c.HeartbeatTick,
